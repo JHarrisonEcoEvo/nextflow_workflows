@@ -1,0 +1,56 @@
+#!/usr/bin/env nextflow
+//=============================================================================
+//              gbs_nextflow - A tool to ease RADseq bioinformatics
+//                                  J. Harrison
+//Usage: nextflow gbs_nextflow --in pathtoreads --key demuxkey --path_out
+//Where the pathtoreads is to a directory with single-end reads
+//from a RADseq experiment. Reads should be fastq formatted.
+//The demultiplexing key should have three columns: well, sequence, sample
+//See example data to view expected formatting. The output path can be
+//wherever you want the files output by this workflow to be written.
+//
+// Each process will be explained at the beginning of its invocation.
+//=============================================================================
+
+//Load input, note that these defaults will be overridden via STDIN
+// (see above for usage)
+
+//Input parameters and initial channel and file designation
+params.in = ""
+params.key = ""
+params.path_out = ""
+
+outputdir = file(params.path_out) //specify the output directory
+key = file(params.key) //specify that the demux key is a file
+
+//channel for fastqs that is usded to handle multiple files in parallel
+fastq_raw = Channel.fromPath(params.in)
+
+//Need to add tapioca
+
+process demux {
+  // Take fastq(s) as input and demultiplex them using a perl script written
+  // by C. Alex Buerkle and Z. Gompert. This script can handle variable
+  // length barcodes from 8 to 10 bases long and allows for one base mismatch
+  // correction.
+
+  // We publish the output of this process to our output directory.
+  // This copies the output from the working directory that Nextflow builds
+  // the default is to make a symbolic link. However, if one wants to delete
+  // the working directory then copying these intermediate outputs is the only
+  // way to retain them.
+
+  publishDir "$params.path_out", mode: 'copy'
+
+  input:
+    path fastq_file from fastq_raw
+
+  output:
+    file '*.fastq' into demux_out
+
+  script:
+  """
+  parse_barcodes768.pl ${key} ${fastq_file} K00188
+  """
+
+}
