@@ -2,12 +2,13 @@
 //=============================================================================
 //              gbs_nextflow - A tool to ease RADseq bioinformatics
 //                                  J. Harrison
-//Usage: nextflow gbs_nextflow --in pathtoreads --key demuxkey --path_out
+//Usage: nextflow gbs_nextflow --in pathtoreads --key demuxkey --path_out --dbpath
 //Where the pathtoreads is to a directory with single-end reads
 //from a RADseq experiment. Reads should be fastq formatted.
 //The demultiplexing key should have three columns: well, sequence, sample
 //See example data to view expected formatting. The output path can be
 //wherever you want the files output by this workflow to be written.
+//dbpath is the path to a directory with bowtie formatted contaminant databases
 //
 // Each process will be explained at the beginning of its invocation.
 //=============================================================================
@@ -15,19 +16,63 @@
 //Load input, note that these defaults will be overridden via STDIN
 // (see above for usage)
 
-//Input parameters and initial channel and file designation
-params.in = ""
-params.key = ""
-params.path_out = ""
-
 outputdir = file(params.path_out) //specify the output directory
+dbdir = file(params.dbpath) //specify the reference database path
+
 key = file(params.key) //specify that the demux key is a file
 
 //channel for fastqs that is usded to handle multiple files in parallel
 fastq_raw = Channel.fromPath(params.in)
 
-//Need to add tapioca
+//======================================================
 
+process clean {
+  // Remove common contaminants from fastq(s) using the tapioca scripts
+  // see: https://github.com/ncgr/tapioca
+  input:
+    path fastq_file from fastq_raw
+
+  output:
+      path 'out.fastq' into clean_out
+      
+  // Note that Nextflow looks in the bin folder in the dir it is run from.
+  // A relative path from the working directory (./work as built by nextflow)
+  // is possible, but putting stuff in bin is cleaner.
+
+  // We run tapioca, which does a bowtie alignment to determine sequences that
+  // match contaminants. We append (>>) the output of each query to a hits file
+  // that will be used to scrub the input fastq.
+
+  script:
+  """
+  tap_contam_analysis --db ${dbdir}/phix174 --pct 80 ${fastq_file} > hits.txt
+  echo "PhiX filtering completed for ${fastq_file}"
+
+  tap_contam_analysis --db ${dbdir}/illumina_oligos --pct 20 ${fastq_file} >> hits.txt
+  echo "Illumina adapter filtering completed for ${fastq_file}"
+
+  tap_contam_analysis --db ${dbdir}/ecoli-k-12 --pct 80 ${fastq_file} >> hits.txt
+  echo "E. coli filtering completed for ${fastq_file}"
+
+  # Originally, scrubbing done via fqu-cull. But that program requires
+  # compilation, which has led to cryptic problems on my system due to the
+  # declaration of the sleep command.
+  # cat ${fastq_file} | fqu_cull -r hits.txt
+
+  # New solution uses things basic to Linux distros.
+  # See http://thegenomefactory.blogspot.com/2012/05/cool-use-of-unix-paste-with-ngs.html
+  # and https://github.com/lh3/seqtk/issues/62
+  # Paste is dope
+  # The v flag to grep inverts the search. The F flag makes the input lines
+  # a literal query, thus avoiding the regex metacharacters that would be present
+  # in a fastq file. The f flag means the input queries are in a file.
+
+  cut -f 1 hits.txt > hitheader
+  cat ${fastq_file} | paste - - - - | grep -v -F -f hitheader | tr "\t" "\n" > out.fastq
+  """
+}
+
+//======================================================
 process demux {
   // Take fastq(s) as input and demultiplex them using a perl script written
   // by C. Alex Buerkle and Z. Gompert. This script can handle variable
@@ -43,11 +88,12 @@ process demux {
   publishDir "$params.path_out", mode: 'copy'
 
   input:
-    path fastq_file from fastq_raw
+    path fastq_file from clean_out
 
   output:
-    file '*.fastq' into demux_out
+    path '*' into demux_out
 
+  //****Need to pull the machine name from the file
   script:
   """
   parse_barcodes768.pl ${key} ${fastq_file} K00188
