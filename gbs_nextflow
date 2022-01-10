@@ -121,6 +121,6 @@ process split_files {
 
   script:
   """
-  splitFastq.pl ${fastq_file}
+  split_by_header.py ${fastq_file}
   """
 }
