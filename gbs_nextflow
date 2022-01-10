@@ -2,15 +2,20 @@
 //=============================================================================
 //              gbs_nextflow - A tool to ease RADseq bioinformatics
 //                                  J. Harrison
-//  Usage: nextflow gbs_nextflow --in pathtoreads --key demuxkey --path_out --dbpath
+//  Usage: nextflow gbs_nextflow --in --key --path_out --dbpath --mode
+//  Example: nextflow gbs_nextflow --in data/sample1.fastq --key data/samplekey.csv
+//   --path_out ./data/ --dbpath ./contaminants/ --mode denovo
 //
-//  Where the pathtoreads is to a directory with unzipped single-end reads
+//
+//  "in" - is a path to a directory with unzipped single-end reads
 //  from a RADseq experiment. Reads should be fastq formatted.
-//  The demultiplexing key should have three columns: well, sequence, sample
-//  See example data to view expected formatting. The output path can be
-//  wherever you want the files output by this workflow to be written.
-//  dbpath is the path to a directory with bowtie formatted contaminant
-//  databases
+//  "key" -- The demultiplexing key, which should have three columns:
+//  well, sequence, sample. See example data to view expected formatting.
+//  "path_out" - The output path, which can be wherever you want the files output by
+//  this workflow to be written.
+//  "dbpath" -is the path to a directory with bowtie formatted contaminant
+//  databases.
+//  "mode" - is the assembly
 //
 // Each process will be explained at the beginning of its invocation.
 //
@@ -18,6 +23,7 @@
 //
 // IMMEDIATE NEEDS:
 // ****Need to pull the machine name from the file
+// ****Need to additional filtering to remove bogus reads.
 //=============================================================================
 
 //Load input
@@ -112,6 +118,8 @@ process demux {
 //======================================================
 process split_files {
   // Take demultiplexed fastq and split into files for each sample
+  // I shifted to a Python script that I found online and modified because
+  // Python is easier to read than Perl.
 
   input:
     path fastq_file from demux_out
@@ -123,4 +131,23 @@ process split_files {
   """
   split_by_header.py ${fastq_file}
   """
+}
+//======================================================
+process assemble {
+    input:
+    file fastqs from split_out
+
+    script:
+    if( mode == 'reference' )
+        """
+        PUT IN ASSEMBLE TO A REFERENC CODE
+        """
+
+    else if( mode == 'denovo' )
+        """
+        mafft --anysymbol --parttree --quiet $seq_to_aln > out_file
+        """
+    else
+        error "Invalid alignment mode: ${mode}"
+
 }
