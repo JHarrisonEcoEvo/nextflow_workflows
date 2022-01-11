@@ -31,8 +31,9 @@
 
 outputdir = file(params.path_out) //specify the output directory
 dbdir = file(params.dbpath) //specify the reference database path
-
+params.mode = 'denovo'
 key = file(params.key) //specify that the demux key is a file
+params.threshold = 4
 
 //channel for fastqs that is used to handle multiple files in parallel
 fastq_raw = Channel.fromPath(params.in)
@@ -94,6 +95,8 @@ process demux {
   // length barcodes from 8 to 10 bases long and allows for one base mismatch
   // correction.
 
+  //
+
   // We publish the output of this process to our output directory.
   // This copies the output from the working directory that Nextflow builds
   // the default is to make a symbolic link. However, if one wants to delete
@@ -107,7 +110,6 @@ process demux {
 
   output:
     path 'parsed_out.fastq' into demux_out
-    path 'parsereport_out.fastq' into temp
 
   script:
   """
@@ -121,33 +123,65 @@ process split_files {
   // I shifted to a Python script that I found online and modified because
   // Python is easier to read than Perl.
 
+  publishDir "$params.path_out", pattern: "parsed_out.fastq.split/*"
+
   input:
     path fastq_file from demux_out
 
   output:
-    path '*' into split_out
+    path '*/*' into split_out
 
   script:
   """
   split_by_header.py ${fastq_file}
   """
 }
+// Making a new channel from the output as otherwise the input to the next
+// process includes all files at once. Probably a more elegant way to solve this.
+
+split_fastqs = Channel.fromPath("${params.path_out}/parsed_out.fastq.split/*")
+
 //======================================================
-process assemble {
-    input:
-    file fastqs from split_out
+process dereplicate {
+  // Find all unique sequences in each sample.
 
-    script:
-    if( mode == 'reference' )
-        """
-        PUT IN ASSEMBLE TO A REFERENC CODE
-        """
+  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
-    else if( mode == 'denovo' )
-        """
-        mafft --anysymbol --parttree --quiet $seq_to_aln > out_file
-        """
-    else
-        error "Invalid alignment mode: ${mode}"
+  input:
+    path fastq_file from split_fastqs
 
+  output:
+    path '*fastq' into derep_out
+
+  script:
+  """
+  vsearch --fastx_uniques ${fastq_file} --sizeout --fastaout derep_${fastq_file}
+  """
+}
+//======================================================
+derep_out
+  .collectFile(name: file('derep.txt'))
+  .set {
+     join_channel
+   }
+
+//derep_all = Channel.fromPath('${params.outputdir}derep.txt')
+
+//======================================================
+process remove_uncommon {
+  // Dereplicate the combined, previously dereplicated files and keep
+  // those sequences that occur N or more times (user defined as --threshold).
+
+  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+  input:
+    file fastq_file from join_channel
+
+  output:
+    path '*' into remove_uncommon_out
+
+  script:
+  """
+  cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fasta #| vsearch --fastx_filter - --minsize ${params.threshold} --fastaout for_assembly.fasta
+  """
 }
