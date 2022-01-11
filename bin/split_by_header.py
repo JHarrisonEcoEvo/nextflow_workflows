@@ -15,10 +15,11 @@ fp = sys.argv[1]
 if not os.path.exists(fp):
     raise Exception("{} does not exist".format(fp))
 
-folder = "{}.split".format(fp)
+# JH: changing output destination to make things cleaner in Nextflow
+# folder = "{}.split".format(fp)
 
-if not os.path.exists(folder):
-    os.mkdir(folder)
+#if not os.path.exists(folder):
+#    os.mkdir(folder)
 
 if fp.endswith('.gz'):
     f = gzip.open(fp)
@@ -35,12 +36,15 @@ for line in f:
     records[name].append(f.next())
     if len(records[name]) > 100000:
         # print "Writing {} lines".format(len(records[name]))
-        with open("{}/{}.fastq".format(folder, name), 'a') as fo:
+        #with open("{}/{}.fastq".format(folder, name), 'a') as fo:
+        with open("{}.fastq".format(name), 'a') as fo:
             fo.write(''.join(records[name]))
         records[name] = []
 
 f.close()
 
 for name in records.keys():
-    with open("{}/{}.fastq".format(folder, name), 'a') as fo:
+    #with open("{}/{}.fastq".format(folder, name), 'a') as fo:
+    with open("{}.fastq".format(name), 'a') as fo:
+
             fo.write(''.join(records[name]))
