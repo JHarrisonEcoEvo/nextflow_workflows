@@ -35,6 +35,18 @@ params.mode = 'denovo'
 key = file(params.key) //specify that the demux key is a file
 params.threshold = 4
 
+log.info """\
+         G B S - N F   P I P E L I N E
+         ===================================
+         Input fastq file: ${params.in}
+         Demultiplexing key: $key
+         Output directory: $outputdir
+         Contaminant database path: $dbdir
+         Mode (should be either denovo or reference): ${params.mode}
+         Threshold (sequence depth to be included in assembly): ${params.threshold}
+         """
+         .stripIndent()
+
 //channel for fastqs that is used to handle multiple files in parallel
 fastq_raw = Channel.fromPath(params.in)
 
@@ -123,32 +135,31 @@ process split_files {
   // I shifted to a Python script that I found online and modified because
   // Python is easier to read than Perl.
 
-  publishDir "$params.path_out", pattern: "parsed_out.fastq.split/*"
+  // Copy the split files to the output directory. In the future this might
+  // be better implemented as an option, as it will eat up disk and increase
+  // runtime substantially.
+
+  publishDir "$params.path_out", pattern: "*", mode: 'copy'
 
   input:
     path fastq_file from demux_out
 
   output:
-    path '*/*' into split_out
+    path '*fastq' into split_out
 
   script:
   """
-  split_by_header.py ${fastq_file}
+  split_by_header_nofolder.py ${fastq_file}
   """
 }
-// Making a new channel from the output as otherwise the input to the next
-// process includes all files at once. Probably a more elegant way to solve this.
-
-split_fastqs = Channel.fromPath("${params.path_out}/parsed_out.fastq.split/*")
-
 //======================================================
 process dereplicate {
   // Find all unique sequences in each sample.
 
-  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
-    path fastq_file from split_fastqs
+    path fastq_file from split_out.flatten()
 
   output:
     path '*fastq' into derep_out
@@ -165,8 +176,6 @@ derep_out
      join_channel
    }
 
-//derep_all = Channel.fromPath('${params.outputdir}derep.txt')
-
 //======================================================
 process remove_uncommon {
   // Dereplicate the combined, previously dereplicated files and keep
@@ -182,6 +191,7 @@ process remove_uncommon {
 
   script:
   """
-  cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fasta #| vsearch --fastx_filter - --minsize ${params.threshold} --fastaout for_assembly.fasta
+  cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fa
+  vsearch --fastx_filter out.fa --minsize ${params.threshold} --fastaout for_assembly.fasta
   """
 }
