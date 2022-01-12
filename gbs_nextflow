@@ -23,7 +23,10 @@
 //
 // IMMEDIATE NEEDS:
 // ****Need to pull the machine name from the file
-// ****Need to additional filtering to remove bogus reads.
+// ****Need to add additional filtering to remove bogus reads.
+// ***Need to fix the absolute path to cdhit I used. Path issues led me to this,
+// quick fix since we will be running this other places anyway.
+// ***Build index probably will need modified if a reference option is added earlier
 //=============================================================================
 
 //Load input
@@ -156,6 +159,7 @@ process split_files {
 process dereplicate {
   // Find all unique sequences in each sample.
 
+  // For troubleshooting ease
   // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
@@ -170,6 +174,9 @@ process dereplicate {
   """
 }
 //======================================================
+//Join all the outputs of derep into a new file and turn that into a channel.
+// Currently this outputs to the directory from which Nextflow is run.
+// This should be cleaned up. There is probably a better solution than this.
 derep_out
   .collectFile(name: file('derep.txt'))
   .set {
@@ -181,13 +188,14 @@ process remove_uncommon {
   // Dereplicate the combined, previously dereplicated files and keep
   // those sequences that occur N or more times (user defined as --threshold).
 
-  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // For troubleshooting ease
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from join_channel
 
   output:
-    path '*' into remove_uncommon_out
+    path 'for_assembly.fasta' into remove_uncommon_out
 
   script:
   """
@@ -195,3 +203,66 @@ process remove_uncommon {
   vsearch --fastx_filter out.fa --minsize ${params.threshold} --fastaout for_assembly.fasta
   """
 }
+//======================================================
+process assemble {
+  // Use cd-hit to perform a de novo assembly. Functionality will be added
+  // for reference-based assembly.
+  // Work by LaCava et al. 2020 suggests that cd-hit is the best assembler
+  // for denovo work when variants are present.
+
+  // For troubleshooting ease
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+  input:
+    file fastq_file from remove_uncommon_out
+
+  output:
+    path 'denovoAssembly_0.9' into assemble_out
+
+  script:
+    """
+    # M means memory limit, zero means unlimited
+    # T means threads, 0 means all available cpus should be used
+    # c means "sequence identity threshold, default 0.9
+ 	  #   this is the default cd-hit's "global sequence identity" calculated as:
+ 	  #   number of identical amino acids or bases in alignment
+ 	  #   divided by the full length of the shorter sequence
+
+    ~/builds/cdhit/cd-hit-est -i $fastq_file -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
+    """
+  }
+//======================================================
+process build_index {
+  // Use bwa to make an index out of our denovo genome.
+  // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
+
+  // TODO: once a reference option is added to this worklow then that reference
+  // will need to be passed in here and turned into an index
+
+   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+  input:
+    file genome from assemble_out
+
+  output:
+    path '*' into build_index_out
+
+  script:
+  """
+  # p means prefix for the index files
+  # a is the algorithm used to build the index
+
+  # We use the bwtsw algorithm here because it works with BWT-SW which is a
+  # local alignment tool. It is supposed to be better than BLAST for finding all
+  # hits.
+
+  bwa index -p ${genome}_bwa_indexed -a bwtsw $genome
+  """
+  }
+
+//======================================================
+//  process align_samples_genome {
+    // Align samples to the newly indexed genome
+
+
+//  }
