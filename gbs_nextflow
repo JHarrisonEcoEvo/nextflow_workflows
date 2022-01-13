@@ -163,7 +163,7 @@ process split_files {
     path fastq_file from demux_out
 
   output:
-    path '*fastq' into split_outCollected.collect()
+    path '*fastq' into split_out
 
   script:
   """
@@ -172,15 +172,11 @@ process split_files {
   """
 }
 
-//IMPORTANT. We collect the files that were made here and put them in a channel.
-// This changes our previous queue channel into a value channel and the latter
-// can be reused! This lets us pass in a channel of file paths multiple times.
-// Also, it lets us run a process for each item in the channel without there
-// having to be a corresponding item in another input channel. We do this
-// during allignment. Critically, we use the "each" repeater during input to
-// get this to work (see 'Input repeaters' in the docs)
+//IMPORTANT. We convert the split-out channel into a value channel here.
+// Value channels can be reused, but queue channels cannot.
 
-\\split_outCollected = Channel.fromPath( "${params.path_out}/split_fastqs/*fastq", checkIfExists: true ).collect()
+split_outCollected =  split_out
+       .first()
 
 //======================================================
 process dereplicate {
