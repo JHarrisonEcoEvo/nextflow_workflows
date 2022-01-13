@@ -19,6 +19,15 @@
 //
 // Each process will be explained at the beginning of its invocation.
 //
+// To see where time is spent use the wordflow report feature of nextflow, e.g.:
+// nextflow run <pipeline name> -with-report [file name]
+//
+// To see what commands are run, which is wise to make sure this does what it
+// should, use: nextflow log "name" -f script
+// Where name is the name of the run that is auto-assigne by NF
+// (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
+// this will let you figure out which run to look at in more depth.
+//
 // Developer notes: future modifications to allow zipped files could be useful
 //
 // IMMEDIATE NEEDS:
@@ -142,19 +151,26 @@ process split_files {
   // be better implemented as an option, as it will eat up disk and increase
   // runtime substantially.
 
-  publishDir "$params.path_out", pattern: "*", mode: 'copy'
+  // publishDir "$params.path_out", pattern: "*", mode: 'copy'
 
   input:
     path fastq_file from demux_out
 
   output:
-    path '*fastq' into split_out
+    path '*fastq' into split_out mode flatten
 
   script:
   """
   split_by_header_nofolder.py ${fastq_file}
   """
 }
+//======================================================
+// Make two versions of the split_out channel so that we can use these same
+// files during alignment. Each channel can only have one in and one out, hence
+// this hack. See https://www.nextflow.io/docs/latest/faq.html?highlight=faqs
+
+split_out.into { split_out_for_alignment; split_out_for_dereplication }
+
 //======================================================
 process dereplicate {
   // Find all unique sequences in each sample.
@@ -163,7 +179,7 @@ process dereplicate {
   // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
-    path fastq_file from split_out.flatten()
+    path fastq_file from split_out_for_dereplication
 
   output:
     path '*fastq' into derep_out
@@ -239,30 +255,53 @@ process build_index {
   // TODO: once a reference option is added to this worklow then that reference
   // will need to be passed in here and turned into an index
 
-   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // For troubleshooting ease
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file genome from assemble_out
 
   output:
-    path '*' into build_index_out
+    \\ This channel is not used, so there may be a better way to specify
+    \\ output here.
+   path '*' into build_index_out
 
   script:
   """
-  # p means prefix for the index files
-  # a is the algorithm used to build the index
+  # -p is the prefix for the index
 
-  # We use the bwtsw algorithm here because it works with BWT-SW which is a
-  # local alignment tool. It is supposed to be better than BLAST for finding all
-  # hits.
-
-  bwa index -p ${genome}_bwa_indexed -a bwtsw $genome
+  bwa index -p "index" $genome
   """
   }
 
 //======================================================
-//  process align_samples_genome {
+  process align_samples_genome {
     // Align samples to the newly indexed genome
+    // Note that the original script to implement this step was runbwa.pl
+    // I use Nextflow's file handling here instead of the perl wrapper.
+    // Also, I changed from bwa aln to bwa mem because the latter is known
+    // to have a higher mapping rate.
 
+    // From NF manual: The first operator creates a channel that returns the
+    // first item emitted by the source channel, or...the first item that
+    // matches a condition. I am using this here to get the index file from
+    // build_index_out
 
-//  }
+    publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+    input:
+      path fastq_file from split_out_for_alignment
+
+    output:
+      path '*' into align_samples_out
+
+    script:
+    """
+    # From manual: Align 70bp-1Mbp query sequences with the BWA-MEM algorithm.
+    # Briefly, the algorithm works by seeding alignments with maximal exact
+    # matches (MEMs) and then extending seeds with the
+    # affine-gap Smith-Waterman algorithm (SW).
+
+    bwa mem index ${fastq_file}
+    """
+ }
