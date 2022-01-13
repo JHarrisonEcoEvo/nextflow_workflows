@@ -163,7 +163,7 @@ process split_files {
     path fastq_file from demux_out
 
   output:
-    path '*fastq' into split_out
+    path '*fastq' into split_outCollected.collect()
 
   script:
   """
@@ -180,7 +180,7 @@ process split_files {
 // during allignment. Critically, we use the "each" repeater during input to
 // get this to work (see 'Input repeaters' in the docs)
 
-split_outCollected = Channel.fromPath( "${params.path_out}/split_fastqs/*fastq", checkIfExists: true ).collect()
+\\split_outCollected = Channel.fromPath( "${params.path_out}/split_fastqs/*fastq", checkIfExists: true ).collect()
 
 //======================================================
 process dereplicate {
