@@ -2,9 +2,9 @@
 //=============================================================================
 //              gbs_nextflow - A tool to ease RADseq bioinformatics
 //                                  J. Harrison
-//  Usage: nextflow gbs_nextflow --in --key --path_out --dbpath --mode
+//  Usage: nextflow gbs_nextflow --in --key --path_out --dbpath --mode --threshold
 //  Example: nextflow gbs_nextflow --in data/sample1.fastq --key data/samplekey.csv
-//   --path_out ./data/ --dbpath ./contaminants/ --mode denovo
+//   --path_out ./data/ --dbpath ./contaminants/ --mode denovo --threshold 4
 //
 //
 //  "in" - is a path to a directory with unzipped single-end reads
@@ -16,6 +16,8 @@
 //  "dbpath" -is the path to a directory with bowtie formatted contaminant
 //  databases.
 //  "mode" - is the assembly
+//  "threshold" - is the number of times a sequence must be observed to be
+//                included in the assembly.
 //
 // Each process will be explained at the beginning of its invocation.
 //
@@ -23,7 +25,8 @@
 // nextflow run <pipeline name> -with-report [file name]
 //
 // To see what commands are run, which is wise to make sure this does what it
-// should, use: nextflow log "name" -f script
+// should, use:
+//                  nextflow log "name" -f script
 // Where name is the name of the run that is auto-assigne by NF
 // (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
 // this will let you figure out which run to look at in more depth.
@@ -59,7 +62,8 @@ log.info """\
          """
          .stripIndent()
 
-//channel for fastqs that is used to handle multiple files in parallel
+//======================================================
+// Channel for fastqs that is used to handle multiple files in parallel
 fastq_raw = Channel.fromPath(params.in)
 
 //======================================================
@@ -140,6 +144,8 @@ process demux {
   parse_barcodes768.pl ${key} ${fastq_file} K00188
   """
 }
+//channel for fastqs that is used to handle multiple files in parallel
+fastq_raw = Channel.fromPath(params.in)
 
 //======================================================
 process split_files {
@@ -151,25 +157,30 @@ process split_files {
   // be better implemented as an option, as it will eat up disk and increase
   // runtime substantially.
 
-  // publishDir "$params.path_out", pattern: "*", mode: 'copy'
+  publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
 
   input:
     path fastq_file from demux_out
 
   output:
-    path '*fastq' into split_out mode flatten
+    path '*fastq' into split_out
 
   script:
   """
+
   split_by_header_nofolder.py ${fastq_file}
   """
 }
-//======================================================
-// Make two versions of the split_out channel so that we can use these same
-// files during alignment. Each channel can only have one in and one out, hence
-// this hack. See https://www.nextflow.io/docs/latest/faq.html?highlight=faqs
 
-split_out.into { split_out_for_alignment; split_out_for_dereplication }
+//IMPORTANT. We collect the files that were made here and put them in a channel.
+// This changes our previous queue channel into a value channel and the latter
+// can be reused! This lets us pass in a channel of file paths multiple times.
+// Also, it lets us run a process for each item in the channel without there
+// having to be a corresponding item in another input channel. We do this
+// during allignment. Critically, we use the "each" repeater during input to
+// get this to work (see 'Input repeaters' in the docs)
+
+split_outCollected = Channel.fromPath( "${params.path_out}/split_fastqs/*fastq", checkIfExists: true ).collect()
 
 //======================================================
 process dereplicate {
@@ -179,20 +190,21 @@ process dereplicate {
   // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
-    path fastq_file from split_out_for_dereplication
+    each fastq_file from split_outCollected
 
   output:
-    path '*fastq' into derep_out
+    path '*' into derep_out
 
-  script:
-  """
-  vsearch --fastx_uniques ${fastq_file} --sizeout --fastaout derep_${fastq_file}
-  """
+  shell:
+  '''
+  outname=$(basename !{fastq_file})
+  vsearch --fastx_uniques !{fastq_file} --sizeout --fastaout ${outname}derep
+  '''
 }
 //======================================================
 //Join all the outputs of derep into a new file and turn that into a channel.
 // Currently this outputs to the directory from which Nextflow is run.
-// This should be cleaned up. There is probably a better solution than this.
+// There is probably a better solution than this.
 derep_out
   .collectFile(name: file('derep.txt'))
   .set {
@@ -256,15 +268,13 @@ process build_index {
   // will need to be passed in here and turned into an index
 
   // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file genome from assemble_out
 
   output:
-    \\ This channel is not used, so there may be a better way to specify
-    \\ output here.
-   path '*' into build_index_out
+    path "*.{amb,ann,bwt,pac,sa}" into build_index_out
 
   script:
   """
@@ -273,6 +283,7 @@ process build_index {
   bwa index -p "index" $genome
   """
   }
+
 
 //======================================================
   process align_samples_genome {
@@ -290,18 +301,20 @@ process build_index {
     publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
     input:
-      path fastq_file from split_out_for_alignment
+      each fastq_file from split_outCollected
+      path indexFiles from build_index_out
 
     output:
       path '*' into align_samples_out
 
-    script:
-    """
+    shell:
+    '''
     # From manual: Align 70bp-1Mbp query sequences with the BWA-MEM algorithm.
     # Briefly, the algorithm works by seeding alignments with maximal exact
     # matches (MEMs) and then extending seeds with the
     # affine-gap Smith-Waterman algorithm (SW).
 
-    bwa mem index ${fastq_file}
-    """
+    outname=$(basename !{fastq_file})
+    bwa mem index !{fastq_file} > ${outname}aligned.sam
+    '''
  }
