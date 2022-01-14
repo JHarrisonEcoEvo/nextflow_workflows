@@ -19,26 +19,31 @@
 //  "threshold" - is the number of times a sequence must be observed to be
 //                included in the assembly.
 //
+// Example call: nextflow run gbs_nextflow --in ./data/sample1.fastq
+// --key data/samplekey.csv --dbpath ./contaminants/ --path_out ./data/ --mode denovo --threshold 4
+//
 // Each process will be explained at the beginning of its invocation.
 //
-// To see where time is spent use the wordflow report feature of nextflow, e.g.:
+// To see where time is spent use the workflow report feature of nextflow, e.g.:
 // nextflow run <pipeline name> -with-report [file name]
 //
 // To see what commands are run, which is wise to make sure this does what it
 // should, use:
 //                  nextflow log "name" -f script
-// Where name is the name of the run that is auto-assigne by NF
+// Where name is the name of the run that is auto-assigned by NF
 // (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
 // this will let you figure out which run to look at in more depth.
 //
 // Developer notes: future modifications to allow zipped files could be useful
+// The demulitplexing process could split the input fastqs first for a big
+// speed gain.
 //
 // IMMEDIATE NEEDS:
 // ****Need to pull the machine name from the file
 // ****Need to add additional filtering to remove bogus reads.
 // ***Need to fix the absolute path to cdhit I used. Path issues led me to this,
 // quick fix since we will be running this other places anyway.
-// ***Build index probably will need modified if a reference option is added earlier
+// ***The 'build index' process will need modified if a reference option is added
 //=============================================================================
 
 //Load input
@@ -144,8 +149,6 @@ process demux {
   parse_barcodes768.pl ${key} ${fastq_file} K00188
   """
 }
-//channel for fastqs that is used to handle multiple files in parallel
-fastq_raw = Channel.fromPath(params.in)
 
 //======================================================
 process split_files {
@@ -288,11 +291,6 @@ process build_index {
     // I use Nextflow's file handling here instead of the perl wrapper.
     // Also, I changed from bwa aln to bwa mem because the latter is known
     // to have a higher mapping rate.
-
-    // From NF manual: The first operator creates a channel that returns the
-    // first item emitted by the source channel, or...the first item that
-    // matches a condition. I am using this here to get the index file from
-    // build_index_out
 
     publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
