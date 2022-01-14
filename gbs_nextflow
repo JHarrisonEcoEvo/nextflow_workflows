@@ -357,10 +357,29 @@ process build_index {
     path bamfile from sam2bam
 
   output:
-    path '*' into makebai
+    tuple path("${bamfile}") , path("*bai") into bai_bam
 
     script:
     """
     samtools index $bamfile
     """
 }
+//======================================================
+  process mpileup {
+     //
+     // https://davetang.org/muse/2015/08/26/samtools-mpileup/
+     input:
+        tuple path("${bamfile}") , path("*bai") from bai_bam
+
+     output:
+       path '*' into mpileup_out
+
+Need to make the reference fasta a value channel and fix all the deprecated flags
+       script:
+       """
+       samtools mpileup -P ILLUMINA --BCF --max-depth 100 --adjust-MQ 50 --min-BQ 20 --min-MQ 20 --skip-indels --output-tags AD,DP --fasta-ref ../reference.fasta.original_0.9 aln*sorted.bam | \
+       bcftools call -m --variants-only --format-fields GQ --skip-variants indels | \
+       bcftools filter --set-GTs . -i 'QUAL > 19 && FMT/GQ >9' | \
+       bcftools view -m 2 -M 2 -v snps --apply-filter "PASS" --output-type v --output-file variants_rawfiltered_27jan20.vcf
+       """
+   }
