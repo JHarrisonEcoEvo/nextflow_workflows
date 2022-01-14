@@ -194,6 +194,11 @@ process dereplicate {
   output:
     path '*' into derep_out
 
+  //Note that I use 'shell' instead of 'script' here so that it is a bit easier
+  // to mix bash and nextflow variables. Note that the nextflow variables
+  // are preceded by a ! and the code block must be inside three single quotes
+  // instead of three double quotes.
+
   shell:
   '''
   outname=$(basename !{fastq_file})
@@ -233,21 +238,21 @@ process remove_uncommon {
 //======================================================
 process assemble {
   // Use cd-hit to perform a de novo assembly. Functionality will be added
-  // for reference-based assembly.
+  // for reference-based assembly at a later time.
   // Work by LaCava et al. 2020 suggests that cd-hit is the best assembler
   // for denovo work when variants are present.
 
   // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from remove_uncommon_out
 
   output:
-    path 'denovoAssembly_0.9' into assemble_out
+    path 'out' into assemble_out
 
-  script:
-    """
+  shell:
+    '''
     # M means memory limit, zero means unlimited
     # T means threads, 0 means all available cpus should be used
     # c means "sequence identity threshold, default 0.9
@@ -255,9 +260,12 @@ process assemble {
  	  #   number of identical amino acids or bases in alignment
  	  #   divided by the full length of the shorter sequence
 
-    ~/builds/cdhit/cd-hit-est -i $fastq_file -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
-    """
+    # https://stackoverflow.com/questions/7815553/iterate-through-fasta-entries-and-rename-duplicates
+    ~/builds/cdhit/cd-hit-est -i !{fastq_file} -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
+    awk '/^>/{gsub(/^>/,">Seq"i++"");}1' denovoAssembly_0.9  > out
+    '''
   }
+
 //======================================================
 process build_index {
   // Use bwa to make an index out of our denovo genome.
@@ -267,7 +275,7 @@ process build_index {
   // will need to be passed in here and turned into an index
 
   // For troubleshooting ease
-   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file genome from assemble_out
@@ -282,8 +290,6 @@ process build_index {
   bwa index -p "index" $genome
   """
   }
-
-
 //======================================================
   process align_samples_genome {
     // Align samples to the newly indexed genome
@@ -292,7 +298,7 @@ process build_index {
     // Also, I changed from bwa aln to bwa mem because the latter is known
     // to have a higher mapping rate.
 
-    publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  //  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
     input:
       each fastq_file from split_outCollected
@@ -312,3 +318,49 @@ process build_index {
     bwa mem index !{fastq_file} > ${outname}aligned.sam
     '''
  }
+ //======================================================
+   process sam2bam {
+      // Convert Sequence Alignment and Map (SAM) files to BAM files, which are
+      // binary and thus smaller and easier to work with quickly.
+      // Originally we accomplished this with the sam2bam perl script.
+      // If you need a refresher on SAM/BAM then see this page:
+      // https://www.zymoresearch.com/blogs/blog/what-are-sam-and-bam-files
+
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+   input:
+     path samfile from align_samples_out
+
+   output:
+     path '*sorted.bam' into sam2bam
+
+     script:
+     """
+     # Use "view" to onvert from sam to bam (-b) and output (-o)
+     # Use sort to sort by leftmost alignment coordinates
+
+     # Note that cat didn't seem to work here (either with shell or script invocation).
+     # Might be worth revisiting.
+     samtools view -b -o ${samfile}.bam ${samfile}
+     samtools sort ${samfile}.bam -o ${samfile}sorted.bam
+     """
+}
+//======================================================
+  process makebai {
+     // Make index files for BAM files
+     // Use index to make an index for the BAM file. By convention, indices are
+     // suffixed with bai. The index explains which read is where in the file.
+
+  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+  input:
+    path bamfile from sam2bam
+
+  output:
+    path '*' into makebai
+
+    script:
+    """
+    samtools index $bamfile
+    """
+}
