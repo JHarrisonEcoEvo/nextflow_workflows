@@ -2,7 +2,7 @@ version: 2.1
 executors:
   my-custom-executor:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/openjdk:11.0.12 
         auth:
           # ensure you have first added these secrets
           # visit app.circleci.com/settings/project/github/JHarrisonEcoEvo/nextflow_gbs/environment-variables
