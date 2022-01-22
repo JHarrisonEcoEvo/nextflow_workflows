@@ -70,3 +70,4 @@ RUN  wget https://github.com/samtools/bcftools/releases/download/1.9/bcftools-1.
 
 #Copy all the stuff for this Nextflow workflow (python and perl scripts)
 COPY . .
+ENV PATH=${PATH}:/usr/src/bin
