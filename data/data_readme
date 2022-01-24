@@ -1,0 +1,2 @@
+sample1.fastq - an example of single-end fastq data
+samplekey.csv - an example of the key format required for the se_demux_to_bam_bai_denovo workflow
