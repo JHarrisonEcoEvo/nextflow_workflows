@@ -1,5 +1,16 @@
 # nextflow_goodies
-Nextflow workflows for various bioinformatics with associated Docker containers. 
+Nextflow workflows for various bioinformatics associated with genotyping-by-sequencing and RADseq style studies, with associated Docker containers. 
+
+NOTE: most HPCs do not allow Docker be used because the Docker daemon requires root access. Singularity is used for containers instead. To pull a Docker container from DockerHub and convert it to Singularity use the following command (change the container name, of course):
+
+singularity pull docker://harrisonjg/nf_se_demux_to_bam_bai_denovo:latest
+
+Then modify the Nextflow config file to have these lines: 
+
+process {
+    singularity.enabled = true
+    container = 'PATH_TO_YOUR_CONTAINER_IMAGE'
+}
 
 
 WORKFLOWS:
