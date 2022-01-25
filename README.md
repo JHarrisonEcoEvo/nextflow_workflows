@@ -9,9 +9,10 @@ Then modify the Nextflow config file to have these lines:
 
 process {
     singularity.enabled = true
+    
     container = 'PATH_TO_YOUR_CONTAINER_IMAGE'
 }
-
+Or, run the nextflow using the 'with-singularity' flag and the path to the image.
 
 WORKFLOWS:
 
