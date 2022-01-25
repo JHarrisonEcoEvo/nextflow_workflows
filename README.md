@@ -8,7 +8,8 @@ singularity pull docker://harrisonjg/nf_se_demux_to_bam_bai_denovo:latest
 Then modify the Nextflow config file to have these lines: 
 
 process {
-    singularity.enabled = true \n
+    singularity.enabled = true
+    
     container = 'PATH_TO_YOUR_CONTAINER_IMAGE'
 }
 Or, run the nextflow using the 'with-singularity' flag and the path to the image.
