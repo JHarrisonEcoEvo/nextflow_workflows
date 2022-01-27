@@ -10,13 +10,9 @@ jobs:
         - docker
       docker: 
          - image: harrisonjg/nf_se_demux_to_bam_bai_denovo
+         - image: nextflow/nextflow
     steps:
       - checkout    
-      - run:
-          name: Get Nextflow and required tools
-          command: |
-            curl -fsSL get.nextflow.io | bash
-            #apt install -y zip unzip
       - run:    
           name: Run the workflow
           command: |
