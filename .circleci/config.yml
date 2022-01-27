@@ -1,8 +1,8 @@
 version: 2.1
 executors:
   my-custom-executor:
-    machine: 
-	- ubuntu-2004:202111-02
+   machine:
+      image: ubuntu-1604:202007-01
     docker:
       - image: harrisonjg/nf_se_demux_to_bam_bai_denovo
 jobs:
