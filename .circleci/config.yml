@@ -1,13 +1,9 @@
 version: 2.1
-machine:
-    java:
-        version: oraclejdk8
-    services:
-        - docker
 jobs:
   se_demux_to_bam_bai_denovo:
     docker:
       - image: harrisonjg/nf_se_demux_to_bam_bai_denovo
+      - image: nextflow/nextflow
     steps:
       - checkout
       - run: |
