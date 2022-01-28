@@ -1,19 +1,24 @@
 version: 2.0
-executors: 
- docker-executor:
-   docker:
-         - image: harrisonjg/nf_se_demux_to_bam_bai_denovo
-         - image: nextflow/nextflow
 jobs:
-  run_nextflow:
-    executor: docker-executor
+  build:
+    machine:
+      pre:
+        - curl -sSL https://s3.amazonaws.com/circle-downloads/install-circleci-docker.sh | bash -s -- 1.10.0
+      java:
+        version: oraclejdk8
+      services:
+        - docker
     steps:
       - checkout    
+      - run:
+          name: Get Nextflow and required tools
+          command: |
+            curl -fsSL get.nextflow.io | bash
+            #apt install -y zip unzip
       - run:    
           name: Run the workflow
           command: |
-            nextflow run se_demux_to_bam_bai_denovo --in ./data/sample1.fastq --key data/samplekey.csv --path_out ./data/ --dbpath ./contaminants/ --mode denovo --threshold 4 -with-docker harrisonjg/nf_se_demux_to_bam_bai_denovo
-workflows:
- myworkflow:
-   jobs:
-  - run_nextflow
+            ./nextflow run main.nf -profile test,docker
+          no_output_timeout: 1500
+      - store_artifacts:
+          path: test_out
