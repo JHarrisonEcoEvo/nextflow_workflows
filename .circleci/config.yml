@@ -15,10 +15,13 @@ jobs:
           command: |
             curl -fsSL get.nextflow.io | bash
             #apt install -y zip unzip
+      - run:
+          name: Get docker image
+          command: |
+		docker pull harrisonjg/nf_se_demux_to_bam_bai_denovo
       - run:    
           name: Run the workflow
           command: |
-            ./nextflow run main.nf -profile test,docker
-          no_output_timeout: 1500
+              ./nextflow run se_demux_to_bam_bai_denovo --in ./data/sample1.fastq --key data/samplekey.csv --path_out ./data/ --dbpath ./contaminants/ --mode denovo --threshold 4 -with-docker harrisonjg/nf_se_demux_to_bam_bai_denovo
       - store_artifacts:
           path: test_out
