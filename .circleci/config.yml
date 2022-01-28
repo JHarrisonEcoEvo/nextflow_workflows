@@ -18,7 +18,7 @@ jobs:
       - run:
           name: Get docker image
           command: |
-		docker pull harrisonjg/nf_se_demux_to_bam_bai_denovo
+	    docker pull harrisonjg/nf_se_demux_to_bam_bai_denovo
       - run:    
           name: Run the workflow
           command: |
