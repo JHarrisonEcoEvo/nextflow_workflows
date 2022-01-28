@@ -7,11 +7,13 @@ singularity pull docker://harrisonjg/nf_se_demux_to_bam_bai_denovo:latest
 
 Then modify the Nextflow config file to have these lines: 
 
+```
 process {
     singularity.enabled = true
     
     container = 'PATH_TO_YOUR_CONTAINER_IMAGE'
 }
+```
 Or, run the nextflow using the 'with-singularity' flag and the path to the image.
 
 CONFIG: 
@@ -23,3 +25,5 @@ se_demux_to_bam_bai_denovo - Takes single-end Illumina reads, makes a de novo re
 [Associated Docker repo](https://hub.docker.com/r/harrisonjg/nf_se_demux_to_bam_bai_denovo)
 
 gbs_nextflow - In progress. This will be an all encompassing RADseq workflow. Currently determining if this makes sense versus using several smaller workflows.
+
+[![JHarrisonEcoEvo](https://circleci.com/gh/JHarrisonEcoEvo/nextflow_workflows.svg?style=svg)](https://app.circleci.com/pipelines/github/JHarrisonEcoEvo/nextflow_workflows?filter=all)
