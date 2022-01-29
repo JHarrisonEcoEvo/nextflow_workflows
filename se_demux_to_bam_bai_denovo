@@ -69,7 +69,11 @@ log.info """\
 // Define the channel for fastqs that is used to handle multiple files in parallel
 // IMPORTANT: using collect to make this a value channel, so it can be reused.
 
-fastq_raw = Channel.fromPath(params.in).collect()
+fastq_raw = Channel.fromPath(params.in)
+                      .splitFastq( by: 1000, file: true)
+
+fastq_wholeFile = Channel.fromPath(params.in).collect()
+//fastq_raw = Channel.fromPath(params.in).collect()
 
 //=============================================================================
 //                            Begin processes
@@ -79,7 +83,7 @@ process extractMachineName {
   // Extract the name of the sequencing machine from the input files.
   // This name is used during demultiplexing
   input:
-    path fastq_file from fastq_raw
+    path fastq_file from fastq_wholeFile
 
   output:
       stdout machine_name
@@ -159,16 +163,13 @@ process demux {
   // by C. Alex Buerkle and Z. Gompert. This script can handle variable
   // length barcodes from 8 to 10 bases long and allows for one base mismatch
   // correction.
-
-  //
-
   // We publish the output of this process to our output directory.
   // This copies the output from the working directory that Nextflow builds
   // the default is to make a symbolic link. However, if one wants to delete
   // the working directory then copying these intermediate outputs is a
   // way to retain them.
 
-  // publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
+   publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
 
   input:
     path fastq_file from filter_out
@@ -183,6 +184,9 @@ process demux {
   parse_barcodes768.pl ${key} ${fastq_file} $machine_name
   """
 }
+PROBLEM HERE. This python script is overwriting files.
+Need to make it append to files or touch new ones
+Then probably need to fix what comes out too, bc it right now this process spawns 861 jobs and I expected 266
 
 //======================================================
 process split_files {
@@ -200,13 +204,16 @@ process split_files {
     path fastq_file from demux_out
 
   output:
-    path '*fastq' into split_outCollected
+    path '*fastq' into split_out
 
   script:
   """
   split_by_header_nofolder.py ${fastq_file}
   """
 }
+
+// Convert the split_out channel into a value channel
+split_outCollected = split_out.collect()
 
 //======================================================
 process dereplicate {
