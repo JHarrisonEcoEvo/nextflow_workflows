@@ -184,9 +184,12 @@ process demux {
   parse_barcodes768.pl ${key} ${fastq_file} $machine_name
   """
 }
-PROBLEM HERE. This python script is overwriting files.
-Need to make it append to files or touch new ones
-Then probably need to fix what comes out too, bc it right now this process spawns 861 jobs and I expected 266
+
+demux_out
+  .collectFile(name: file('demuxTest.txt'))
+  .set {
+     demux_cat
+   }
 
 //======================================================
 process split_files {
@@ -196,12 +199,12 @@ process split_files {
 
   // Copy the split files to the output directory. In the future this might
   // be better implemented as an option, as it will eat up disk and increase
-  // runtime substantially.
+  // runtime.
 
-  publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
+   publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
 
   input:
-    path fastq_file from demux_out
+    path fastq_file from demux_cat
 
   output:
     path '*fastq' into split_out
@@ -213,17 +216,19 @@ process split_files {
 }
 
 // Convert the split_out channel into a value channel
-split_outCollected = split_out.collect()
+//split_outCollected = split_out.collect()
+// Duplicate the split channel to use twice below
+split_out.into {split_out1; split_out2}
 
 //======================================================
 process dereplicate {
   // Find all unique sequences in each sample.
 
   // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
-    each fastq_file from split_outCollected
+    each fastq_file from split_out1.collect()
 
   output:
     path '*' into derep_out
@@ -236,13 +241,14 @@ process dereplicate {
   shell:
   '''
   outname=$(basename !{fastq_file})
-  vsearch --fastx_uniques !{fastq_file} --sizeout --fastaout ${outname}derep
+  vsearch --fastx_uniques !{fastq_file} --sizein --sizeout --fastaout ${outname}derep
   '''
 }
 //======================================================
 //Join all the outputs of derep into a new file and turn that into a channel.
-// Currently this outputs to the directory from which Nextflow is run.
-// There is probably a better solution than this.
+// Currently this outputs to the directory from which Nextflow is run, which I delete.
+// Other solutions for this map-reduce problem seem clunkier
+//
 derep_out
   .collectFile(name: file('derep.txt'))
   .set {
@@ -255,7 +261,7 @@ process remove_uncommon {
   // those sequences that occur N or more times (user defined as --threshold).
 
   // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from join_channel
@@ -266,7 +272,7 @@ process remove_uncommon {
   script:
   """
   cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fa
-  vsearch --fastx_filter out.fa --minsize ${params.threshold} --fastaout for_assembly.fasta
+  vsearch --fastx_filter out.fa --minsize ${params.threshold} --sizein --sizeout --fastaout for_assembly.fasta
   """
 }
 //======================================================
@@ -277,7 +283,7 @@ process assemble {
   // for denovo work when variants are present.
 
   // For troubleshooting ease
-   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from remove_uncommon_out
@@ -333,7 +339,7 @@ process build_index {
   //  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
     input:
-      each fastq_file from split_outCollected
+      each fastq_file from split_out2.collect()
       path indexFiles from build_index_out
 
     output:
@@ -367,7 +373,7 @@ process build_index {
 
      script:
      """
-     # Use "view" to onvert from sam to bam (-b) and output (-o)
+     # Use "view" to convert from sam to bam (-b) and output (-o)
      # Use sort to sort by leftmost alignment coordinates
      # Note that cat didn't seem to work here (either with shell or script invocation).
      # Might be worth revisiting.
@@ -375,9 +381,6 @@ process build_index {
      samtools sort ${samfile}.bam -o ${samfile}sorted.bam
      """
 }
-
-// bam channel duplication //Useful to extend the output of this script
-//sam2bam.into {bam1; bam2}
 
 //======================================================
   process makebai {
