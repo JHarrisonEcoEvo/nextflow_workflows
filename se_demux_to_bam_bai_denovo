@@ -38,9 +38,13 @@
 // (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
 // this will let you figure out which run to look at in more depth.
 //
-// Developer notes: future modifications to allow zipped files could be useful
-// The demulitplexing process could split the input fastqs first for a big
-// speed gain. The 'build index' process will need modified if a reference option is added
+// Developer notes:
+// 1. future modifications to persist zipped files through the
+// workflow would be helpful, currently zipped input fastqs will not work.
+// 2. The 'build index' process will need modified if a reference option is added
+// 3. Stdout is not written to a file, nor is there any arithmetic to sum results
+// from split up files. E.g., summing the numbers of reads removed during filtering
+// would be useful.
 
 
 //=============================================================================
@@ -186,7 +190,7 @@ process demux {
 }
 
 demux_out
-  .collectFile(name: file('demuxTest.txt'))
+  .collectFile(name: file("${outputdir}demuxTest.txt"))
   .set {
      demux_cat
    }
@@ -204,7 +208,7 @@ process split_files {
    publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
 
   input:
-    path fastq_file from demux_cat
+    each fastq_file from demux_cat
 
   output:
     path '*fastq' into split_out
@@ -212,12 +216,11 @@ process split_files {
   script:
   """
   split_by_header_nofolder.py ${fastq_file}
+  rm ${outputdir}demuxTest.txt
   """
 }
 
-// Convert the split_out channel into a value channel
-//split_outCollected = split_out.collect()
-// Duplicate the split channel to use twice below
+// Duplicate this channel so we can use it multiple times.
 split_out.into {split_out1; split_out2}
 
 //======================================================
@@ -225,7 +228,7 @@ process dereplicate {
   // Find all unique sequences in each sample.
 
   // For troubleshooting ease
-   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     each fastq_file from split_out1.collect()
@@ -244,13 +247,14 @@ process dereplicate {
   vsearch --fastx_uniques !{fastq_file} --sizein --sizeout --fastaout ${outname}derep
   '''
 }
+
 //======================================================
 //Join all the outputs of derep into a new file and turn that into a channel.
 // Currently this outputs to the directory from which Nextflow is run, which I delete.
 // Other solutions for this map-reduce problem seem clunkier
-//
+
 derep_out
-  .collectFile(name: file('derep.txt'))
+  .collectFile(name: file("${outputdir}derep.txt"))
   .set {
      join_channel
    }
@@ -261,7 +265,7 @@ process remove_uncommon {
   // those sequences that occur N or more times (user defined as --threshold).
 
   // For troubleshooting ease
-  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from join_channel
@@ -273,6 +277,7 @@ process remove_uncommon {
   """
   cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fa
   vsearch --fastx_filter out.fa --minsize ${params.threshold} --sizein --sizeout --fastaout for_assembly.fasta
+  rm ${outputdir}derep.txt
   """
 }
 //======================================================
@@ -336,7 +341,7 @@ process build_index {
     // Also, I changed from bwa aln to bwa mem because the latter is known
     // to have a higher mapping rate.
 
-  //  publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+    // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
     input:
       each fastq_file from split_out2.collect()
@@ -363,7 +368,7 @@ process build_index {
       // If you need a refresher on SAM/BAM then see this page:
       // https://www.zymoresearch.com/blogs/blog/what-are-sam-and-bam-files
 
-   //publishDir "$params.path_out", pattern: "*", mode: 'copy'
+      // publishDir "$params.path_out", pattern: "*", mode: 'copy'
 
    input:
      path samfile from align_samples_out
@@ -389,7 +394,7 @@ process build_index {
      // suffixed with bai. The index explains which read is where in the file.
 
      // mode: move is a terminating process
-  //publishDir "$params.path_out", pattern: "*", mode: 'move'
+     // publishDir "$params.path_out", pattern: "*", mode: 'move'
 
   input:
     path bamfile from sam2bam
