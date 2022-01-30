@@ -409,5 +409,7 @@ process build_index {
 }
 
 // print STDOUT
+// Note that this happens during runtime and is not written anywhere.
+// In the future, I want to write stdout to a file and do some parsing of it.
 ch1.view()
 ch2.view()
