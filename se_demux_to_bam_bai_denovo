@@ -19,9 +19,10 @@
 //  this workflow to be written.
 //  "dbpath" -is the path to a directory with bowtie formatted contaminant
 //  databases.
-//  "mode" - is the assembly
+//  "mode" - is the assembly mode, either 'denovo' or 'reference'
 //  "threshold" - is the number of times a sequence must be observed to be
 //                included in the assembly.
+//  "reference" - is path to the reference genome. Indexing will be done within the workflow.
 //
 // Example call: nextflow run se_demux_to_bam_bai_denovo --in ./data/sample1.fastq
 // --key data/samplekey.csv --dbpath ./contaminants/ --path_out ./data/ --mode denovo --threshold 4
@@ -53,8 +54,16 @@
 
 
 outputdir = file(params.path_out) //specify the output directory
-dbdir = file(params.dbpath) //specify the reference database path
-params.mode = 'denovo'
+dbdir = file(params.dbpath) //specify the contaminant database path
+if(params.mode == 'denovo'){
+  referencepath = "NULL"
+  refgenome = "NULL"
+}
+if(params.mode == 'reference'){
+  referencepath = file(params.reference) //specify the reference genome path (not indexed)
+  refgenome = Channel.fromPath(referencepath)
+}
+
 key = file(params.key) //specify that the demux key is a file
 params.threshold = 4
 
@@ -64,6 +73,7 @@ log.info """\
          Input fastq file: ${params.in}
          Demultiplexing key: $key
          Output directory: $outputdir
+         Reference genome path: $referencepath
          Contaminant database path: $dbdir
          Mode (should be either denovo or reference): ${params.mode}
          Threshold (sequence depth to be included in assembly): ${params.threshold}
@@ -236,6 +246,9 @@ process dereplicate {
   output:
     path '*' into derep_out
 
+  when:
+      params.mode == 'denovo'
+
   //Note that I use 'shell' instead of 'script' here so that it is a bit easier
   // to mix bash and nextflow variables. Note that the nextflow variables
   // are preceded by a ! and the code block must be inside three single quotes
@@ -253,12 +266,19 @@ process dereplicate {
 // Currently this outputs to the directory from which Nextflow is run, which I delete.
 // Other solutions for this map-reduce problem seem clunkier
 
-derep_out
-  .collectFile(name: file("${outputdir}derep.txt"))
-  .set {
-     join_channel
-   }
-
+if(params.mode == 'denovo'){
+  derep_out
+    .collectFile(name: file("${outputdir}derep.txt"))
+    .set {
+      join_channel
+      }
+    } else {
+    // Make an empty channel for join_channel if reference condition is met.
+    // Nextflow checks processes to make sure all variables exist, even if the process
+    // won't be run without them, hence the need for this statement.
+    
+      join_channel = Channel.empty()
+    }
 //======================================================
 process remove_uncommon {
   // Dereplicate the combined, previously dereplicated files and keep
@@ -272,6 +292,9 @@ process remove_uncommon {
 
   output:
     path 'for_assembly.fasta' into remove_uncommon_out
+
+  when:
+    params.mode == 'denovo'
 
   script:
   """
@@ -288,13 +311,16 @@ process assemble {
   // for denovo work when variants are present.
 
   // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
   input:
     file fastq_file from remove_uncommon_out
 
   output:
-    path 'out' into assemble_out
+    path 'denovo_assembly' into assemble_out
+
+  when:
+    params.mode == 'denovo'
 
   shell:
     '''
@@ -306,17 +332,14 @@ process assemble {
  	  #   divided by the full length of the shorter sequence
     # https://stackoverflow.com/questions/7815553/iterate-through-fasta-entries-and-rename-duplicates
     cd-hit-est -i !{fastq_file} -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
-    awk '/^>/{gsub(/^>/,">Seq"i++"");}1' denovoAssembly_0.9  > out
+    awk '/^>/{gsub(/^>/,">Seq"i++"");}1' denovoAssembly_0.9  > denovo_assembly
     '''
   }
 
 //======================================================
-process build_index {
+process build_denovo_index {
   // Use bwa to make an index out of our denovo genome.
   // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
-
-  // TODO: once a reference option is added to this worklow then that reference
-  // will need to be passed in here and turned into an index
 
   // For troubleshooting ease
   // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
@@ -327,25 +350,61 @@ process build_index {
   output:
     path "*.{amb,ann,bwt,pac,sa}" into build_index_out
 
+  when:
+      params.mode == 'denovo'
+
   script:
   """
   # -p is the prefix for the index
+  # -a bwtsw is left out because bwa should choose best index method
+  #    automatically based on the size of the reference genome
+
   bwa index -p "index" $genome
   """
   }
+
+//======================================================
+  process build_reference_index {
+    // Use bwa to make an index out of our reference genome.
+    // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
+
+    // For troubleshooting ease
+    // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+    input:
+      file genome from refgenome
+
+    output:
+      path "*.{amb,ann,bwt,pac,sa}" into build_index_out_reference
+
+    when:
+        params.mode == 'reference'
+
+    script:
+    """
+    # -p is the prefix for the index
+    # -a bwtsw is left out because bwa should choose best index method
+    #    automatically based on the size of the reference genome
+
+    bwa index -p "index" $genome
+    """
+    }
+
 //======================================================
   process align_samples_genome {
     // Align samples to the newly indexed genome
     // Note that the original script to implement this step was runbwa.pl
     // I use Nextflow's file handling here instead of the perl wrapper.
-    // Also, I changed from bwa aln to bwa mem because the latter is known
+    // Also, I changed from bwa aln to bwa mem because the latter is supposed
     // to have a higher mapping rate.
 
     // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
     input:
       each fastq_file from split_out2.collect()
-      path indexFiles from build_index_out
+      path indexFiles from build_index_out.mix(build_index_out_reference)
+      // The mix operator combines the two channels from the different build_index processes
+      // This does not seem to fail even if one channel is empty.
 
     output:
       path '*' into align_samples_out
@@ -356,6 +415,7 @@ process build_index {
     # Briefly, the algorithm works by seeding alignments with maximal exact
     # matches (MEMs) and then extending seeds with the
     # affine-gap Smith-Waterman algorithm (SW).
+
     outname=$(basename !{fastq_file})
     bwa mem index !{fastq_file} > ${outname}aligned.sam
     '''
@@ -411,5 +471,5 @@ process build_index {
 // print STDOUT
 // Note that this happens during runtime and is not written anywhere.
 // In the future, I want to write stdout to a file and do some parsing of it.
-ch1.view()
-ch2.view()
+// ch1.view()
+// ch2.view()
