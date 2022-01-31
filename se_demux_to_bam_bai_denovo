@@ -40,10 +40,9 @@
 // this will let you figure out which run to look at in more depth.
 //
 // Developer notes:
-// 1. future modifications to persist zipped files through the
-// workflow would be helpful, currently zipped input fastqs will not work.
-// 2. The 'build index' process will need modified if a reference option is added
-// 3. Stdout is not written to a file, nor is there any arithmetic to sum results
+// 1. future modifications to use zipped files during the
+// workflow might lead to some speed gains, currently zipped input fastqs will not work.
+// 2. Stdout is not written to a file, nor is there any arithmetic to sum results
 // from split up files. E.g., summing the numbers of reads removed during filtering
 // would be useful.
 
@@ -276,7 +275,7 @@ if(params.mode == 'denovo'){
     // Make an empty channel for join_channel if reference condition is met.
     // Nextflow checks processes to make sure all variables exist, even if the process
     // won't be run without them, hence the need for this statement.
-    
+
       join_channel = Channel.empty()
     }
 //======================================================
