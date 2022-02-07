@@ -1,0 +1,131 @@
+#!/usr/bin/env nextflow
+//=============================================================================
+//                         paired end fastqs to OTU table
+//                                  J. Harrison
+//  A Nextflow workflow that takes paired-end reads, filters and demultiplexes,
+//  clusters, and makes an OTU table. The output
+//  of this workflow is an OTU table, a fasta file with consensus OTU sequences
+//
+//  Usage: nextflow pe_to_otu --in --key --path_out
+//  Example: nextflow pe_to_otu --in data/sample1.fastq --key data/samplekey.csv
+//   --path_out ./data/
+//
+//
+//  "in" - should be a glob pattern to unzipped paired-end fastq reads (e.g., "*_{1,2}.fastq")
+//  "key" -- The demultiplexing key, which should have N columns:
+fix key docs
+//  well, sequence, sample. See example data to view expected formatting.
+//  "path_out" - The output path, which can be wherever you want the files output by
+//  this workflow to be written.
+//
+// To see where time is spent use the workflow report feature of nextflow, e.g.:
+// nextflow run <pipeline name> -with-report [file name]
+//
+// To see what commands are run, which is wise to make sure this does what it
+// should, use:
+//                  nextflow log "name" -f script
+// Where name is the name of the run that is auto-assigned by NF
+// (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
+// this will let you figure out which run to look at in more depth.
+
+//=============================================================================
+//                            Input and log.info
+//=============================================================================
+
+Input fastq files: ${params.in}
+outputdir = file(params.path_out) //specify the output directory
+key = file(params.key) //specify that the demux key is a file
+
+log.info """\
+         PE 2 OTU - N F   P I P E L I N E
+         ===================================
+         Input fastq file: ${params.in}
+         Demultiplexing key: $key
+         Output directory: $outputdir
+         """
+         .stripIndent()
+
+// Define the channel for fastqs that is used to handle multiple files in parallel
+// The fromFilePairs option makes a tuple with the glob pattern the key
+// and the two files associated with that pattern the values.
+// The flat option means: "When true the matching files are produced as sole
+// elements in the emitted tuples". This keeps any oddness from happening during
+// parallel processing.
+
+fastq_rawF = Channel.fromFilePairs(${params.in}, flat:true)
+      .splitFastq(by: 100_000, pe:true, file:true)
+      //.view()
+
+fastq_Fpath_forMachineNameOnly = Channel.fromPath(${params.in})
+
+//=============================================================================
+//                            Begin processes
+//=============================================================================
+
+process extractMachineName {
+  // Extract the name of the sequencing machine from the input files.
+  // This name is used during demultiplexing
+  input:
+    path fastq_file from fastq_Fpath_forMachineNameOnly
+
+  output:
+      stdout machine_name
+
+  script:
+      """
+      head -n 1 $fastq_file | cut -d: -f1 | sed 's/@//'
+      """
+  }
+//=============================================================================
+process filter {
+  // Remove reads that have more than one expected error
+  // Note that capturing stdout from numerous iterations is not helpful
+  // without subsequent combination and summarization of those files.
+  // That task will be left for later, during optimization.
+
+  input:
+    path fastq_file from fastq_raw
+
+  output:
+      path '*' into filter_out
+     //  stdout ch2                           //capture STDOUT
+
+  script:
+      """
+      vsearch --fastq_filter ${fastq_file} --fastq_maxee 1 --fastqout ${fastq_file}cleaned
+
+      # echo "Number of reads after filtering in ${fastq_file}cleaned"
+      # grep -c "^@" ${fastq_file}cleaned
+      """
+  }
+
+//======================================================
+  process demux {
+    // Take fastq(s) as input and demultiplex them using a perl script written
+    // by C. Alex Buerkle and Z. Gompert. This script can handle variable
+    // length barcodes from 8 to 10 bases long and allows for one base mismatch
+    // correction.
+
+    // The parse reports for all iterations of this process should be combined
+    // and summarized in the future.
+
+    // publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
+
+    input:
+      path fastq_file from filter_out
+      val machine_name from machine_name
+
+    output:
+      path 'parsed_out.fastqcleaned' into demux_out
+
+    script:
+    """
+    parse_count.pl mid_key.csv forward.fq reverse.fq machinename
+    """
+  }
+
+  demux_out
+    .collectFile(name: file("${outputdir}demuxTest.txt"))
+    .set {
+       demux_cat
+     }
