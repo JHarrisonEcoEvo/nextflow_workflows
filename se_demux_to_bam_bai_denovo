@@ -23,11 +23,8 @@
 //  "threshold" - is the number of times a sequence must be observed to be
 //                included in the assembly.
 //  "reference" - is path to the reference genome. Indexing will be done within the workflow.
-//
-// Example call: nextflow run se_demux_to_bam_bai_denovo --in ./data/sample1.fastq
-// --key data/samplekey.csv --dbpath ./contaminants/ --path_out ./data/ --mode denovo --threshold 4
-//
-// Each process will be explained at the beginning of its invocation.
+//  "force" - Run the workflow even if the initial demultiplexing seems suspect.
+//            Should be either true or false.
 //
 // To see where time is spent use the workflow report feature of nextflow, e.g.:
 // nextflow run <pipeline name> -with-report [file name]
@@ -35,16 +32,18 @@
 // To see what commands are run, which is wise to make sure this does what it
 // should, use:
 //                  nextflow log "name" -f script
+//
 // Where name is the name of the run that is auto-assigned by NF
 // (i.e., adjective_famousLastname). You can see all runs by typing nextflow log
 // this will let you figure out which run to look at in more depth.
 //
 // Developer notes:
-// 1. future modifications to use zipped files during the
-// workflow might lead to some speed gains, currently zipped input fastqs will not work.
-// 2. Stdout is not written to a file, nor is there any arithmetic to sum results
-// from split up files. E.g., summing the numbers of reads removed during filtering
-// would be useful.
+// 1. future modifications to use zipped files during parts of the
+//    workflow might lead to some speed gains, currently zipped input fastqs will not work.
+// 2. Stdout is NOT written to a file other than the ones made by nextflow,
+//    nor is there any arithmetic to sum results
+//    from split up files. E.g., summing the numbers of reads removed during filtering
+//    would be useful.
 
 
 //=============================================================================
@@ -65,6 +64,7 @@ if(params.mode == 'reference'){
 
 key = file(params.key) //specify that the demux key is a file
 params.threshold = 4
+params.force = false //Note that I am not using quotes, so this stays a Boolean!
 
 log.info """\
          G B S - N F   P I P E L I N E
@@ -76,6 +76,8 @@ log.info """\
          Contaminant database path: $dbdir
          Mode (should be either denovo or reference): ${params.mode}
          Threshold (sequence depth to be included in assembly): ${params.threshold}
+         Force (used to force a run in the face of bad demultiplexing): $params.force
+         NOTE: Groovy will coerce any string to true for this parameter, except for false!
          """
          .stripIndent()
 
@@ -95,6 +97,7 @@ fastq_wholeFile = Channel.fromPath(params.in).collect()
 process extractMachineName {
   // Extract the name of the sequencing machine from the input files.
   // This name is used during demultiplexing
+
   input:
     path fastq_file from fastq_wholeFile
 
@@ -107,368 +110,427 @@ process extractMachineName {
       """
   }
 //======================================================
-process clean {
-  // Remove common contaminants from fastq(s) using tapioca script
-  // see: https://github.com/ncgr/tapioca
+  process checkForCorrectkey {
+    // Demultiplex a small portion of the reads to make sure the key is correct.
+    // Save the ratio of good to bad mids and use this as a run condition in the
+    // next process in line.
 
-  input:
-    path fastq_file from fastq_raw
-    val x from machine_name
+    // publishDir "$params.path_out", pattern: "*", mode: 'copy'
 
-  output:
-      path 'out.fastq' into clean_out
-      stdout ch1                           //capture STDOUT
+    input:
+      path fastq_file from fastq_wholeFile
+      val machine_name from machine_name
 
-  // Note that Nextflow looks in the bin folder in the dir it is run from.
+    output:
+      path 'parsereport_-' into checkCorrectParseReport
+      env failDirective into directiveOut //save the environmental variable output by the bash code into a channel, a great trick!
+      stdout checkCorrectOut
 
-  // We run tapioca, which does a bowtie alignment to determine sequences that
-  // match contaminants. We append (>>) the output of each query to a hits file
-  // that will be used to scrub the input fastq.
+      shell:
+          '''
+        #Take the top part of fastq file and demultiplex it
+        head -n 20000 !{fastq_file} | parse_barcodes768.pl !{key} - !{machine_name}
 
-  script:
-  """
-  echo "Number of reads in $fastq_file"
-  grep -c "^@" $fastq_file
+        #Extract the top two rows of the parse report, which state the number of good and bad mids
+        goodMidCount=`head -n 2 parsereport* | cut -f 2 -d ':' | head -n 1`
+        badMidCount=`head -n 2 parsereport* | cut -f 2 -d ':' | tail -n 1`
 
-  tap_contam_analysis --db ${dbdir}/phix174 --pct 80 ${fastq_file} > hits.txt
-  echo "PhiX filtering completed for ${fastq_file}"
-  tap_contam_analysis --db ${dbdir}/illumina_oligos --pct 20 ${fastq_file} >> hits.txt
-  echo "Illumina adapter filtering completed for ${fastq_file}"
-  tap_contam_analysis --db ${dbdir}/ecoli-k-12 --pct 80 ${fastq_file} >> hits.txt
-  echo "E. coli filtering completed for ${fastq_file}"
-  # Originally, scrubbing done via fqu-cull. But that program requires
-  # compilation, which has led to cryptic problems on my system due to the
-  # declaration of the sleep command.
-  # cat ${fastq_file} | fqu_cull -r hits.txt
-  # New solution uses tools basic to Linux.
-  # See http://thegenomefactory.blogspot.com/2012/05/cool-use-of-unix-paste-with-ngs.html
-  # and https://github.com/lh3/seqtk/issues/62
-  # Paste is dope
-  # The v flag to grep inverts the search. The F flag makes the input lines
-  # a literal query, thus avoiding the regex metacharacters that would be present
-  # in a fastq file. The f flag means the input queries are in a file.
-  cut -f 1 hits.txt > hitheader
-  cat ${fastq_file} | paste - - - - | grep -v -F -f hitheader | tr "\t" "\n" > out.fastq
-  """
-}
+        #Calculate the ratio of good to bad mids.
+        ratio=`echo $goodMidCount $badMidCount | awk '{ print \$1/\$2 }'`
 
-//======================================================
-process filter {
-  // Remove reads that have more than one expected error
-  input:
-    path fastq_file from clean_out
+        #Conditionally print a statement to STDOUT
+        if [[ $ratio > 1.2 ]]
+        then
+          echo "The ratio of good to bad mids was ${ratio}. We good....hopefully"
+          failDirective="dontfail"
+        elif [[ $ratio < 1.2 ]]
+        then
+          echo "YIKES: The ratio of good to bad mids was ${ratio}, this seems bad. Stopping now, unless the --force = TRUE parameter has been invoked"
+          failDirective="fail"
+        fi
 
-  output:
-      path '*' into filter_out
-      stdout ch2                           //capture STDOUT
+        # NOTE: the stop condition happens in the next process, which won't run if ratio is bad.
+        # Consequently, no other processes will run.
+        '''
+    }
+    // Print STDOUT from the checkCorrectOut channel
+    checkCorrectOut.view()
 
-  script:
-      """
-      vsearch --fastq_filter ${fastq_file} --fastq_maxee 1 --fastqout ${fastq_file}cleaned
+    //======================================================
+    process clean {
+      // Remove common contaminants from fastq(s) using tapioca script
+      // see: https://github.com/ncgr/tapioca
 
-      echo "Number of reads after filtering in ${fastq_file}cleaned"
-      grep -c "^@" ${fastq_file}cleaned
-      """
-  }
-//======================================================
-process demux {
-  // Take fastq(s) as input and demultiplex them using a perl script written
-  // by C. Alex Buerkle and Z. Gompert. This script can handle variable
-  // length barcodes from 8 to 10 bases long and allows for one base mismatch
-  // correction.
-  // We publish the output of this process to our output directory.
-  // This copies the output from the working directory that Nextflow builds
-  // the default is to make a symbolic link. However, if one wants to delete
-  // the working directory then copying these intermediate outputs is a
-  // way to retain them.
+      input:
+        path fastq_file from fastq_raw
+        val x from machine_name
+        val faildirective from directiveOut
 
-   publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
+      output:
+          path 'out.fastq' into clean_out
+          stdout ch1                           //capture STDOUT
 
-  input:
-    path fastq_file from filter_out
-    val machine_name from machine_name
+      //IMPORTANT: conditionally run when the output of the checkForCorrectkey
+      // process gives a poor ratio of good to bad mids OR when the force
+      // parameter is set to true.
 
-  output:
-    path 'parsed_out.fastqcleaned' into demux_out
-    //Need to just output the demuxed fastqs here, not the report
+      when:
+        faildirective == "dontfail" || params.force
 
-  script:
-  """
-  parse_barcodes768.pl ${key} ${fastq_file} $machine_name
-  """
-}
+      // We run tapioca, which does a bowtie alignment to determine sequences that
+      // match contaminants. We append (>>) the output of each query to a hits file
+      // that will be used to scrub the input fastq.
 
-demux_out
-  .collectFile(name: file("${outputdir}demuxTest.txt"))
-  .set {
-     demux_cat
-   }
+      script:
+          """
+          echo "Number of reads in $fastq_file"
+          grep -c "^@" $fastq_file
 
-//======================================================
-process split_files {
-  // Take demultiplexed fastq and split into files for each sample
-  // I shifted to a Python script that I found online and modified because
-  // Python is easier to read than Perl.
+          tap_contam_analysis --db ${dbdir}/phix174 --pct 80 ${fastq_file} > hits.txt
+          echo "PhiX filtering completed for ${fastq_file}"
+          tap_contam_analysis --db ${dbdir}/illumina_oligos --pct 20 ${fastq_file} >> hits.txt
+          echo "Illumina adapter filtering completed for ${fastq_file}"
+          tap_contam_analysis --db ${dbdir}/ecoli-k-12 --pct 80 ${fastq_file} >> hits.txt
+          echo "E. coli filtering completed for ${fastq_file}"
 
-  // Copy the split files to the output directory. In the future this might
-  // be better implemented as an option, as it will eat up disk and increase
-  // runtime.
+          # Originally, scrubbing done via fqu-cull. But that program requires
+          # compilation, which has led to cryptic problems on my system due to the
+          # declaration of the sleep command.
+          # cat ${fastq_file} | fqu_cull -r hits.txt
+          # New solution uses tools basic to Linux.
+          # See http://thegenomefactory.blogspot.com/2012/05/cool-use-of-unix-paste-with-ngs.html
+          # and https://github.com/lh3/seqtk/issues/62
+          # Paste is dope
+          # The v flag to grep inverts the search. The F flag makes the input lines
+          # a literal query, thus avoiding the regex metacharacters that would be present
+          # in a fastq file. The f flag means the input queries are in a file.
 
-   publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
+          cut -f 1 hits.txt > hitheader
+          cat ${fastq_file} | paste - - - - | grep -v -F -f hitheader | tr "\t" "\n" > out.fastq
+          """
+    }
 
-  input:
-    each fastq_file from demux_cat
+    //======================================================
+    process filter {
+      // Remove reads that have more than one expected error
+      input:
+        path fastq_file from clean_out
 
-  output:
-    path '*fastq' into split_out
+      output:
+          path '*' into filter_out
+          stdout ch2                           //capture STDOUT
 
-  script:
-  """
-  split_by_header_nofolder.py ${fastq_file}
-  rm ${outputdir}demuxTest.txt
-  """
-}
+      script:
+          """
+          vsearch --fastq_filter ${fastq_file} --fastq_maxee 1 --fastqout ${fastq_file}cleaned
 
-// Duplicate this channel so we can use it multiple times.
-split_out.into {split_out1; split_out2}
-
-//======================================================
-process dereplicate {
-  // Find all unique sequences in each sample.
-
-  // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
-
-  input:
-    each fastq_file from split_out1.collect()
-
-  output:
-    path '*' into derep_out
-
-  when:
-      params.mode == 'denovo'
-
-  //Note that I use 'shell' instead of 'script' here so that it is a bit easier
-  // to mix bash and nextflow variables. Note that the nextflow variables
-  // are preceded by a ! and the code block must be inside three single quotes
-  // instead of three double quotes.
-
-  shell:
-  '''
-  outname=$(basename !{fastq_file})
-  vsearch --fastx_uniques !{fastq_file} --sizein --sizeout --fastaout ${outname}derep
-  '''
-}
-
-//======================================================
-//Join all the outputs of derep into a new file and turn that into a channel.
-// Currently this outputs to the directory from which Nextflow is run, which I delete.
-// Other solutions for this map-reduce problem seem clunkier
-
-if(params.mode == 'denovo'){
-  derep_out
-    .collectFile(name: file("${outputdir}derep.txt"))
-    .set {
-      join_channel
+          echo "Number of reads after filtering in ${fastq_file}cleaned"
+          grep -c "^@" ${fastq_file}cleaned
+          """
       }
-    } else {
-    // Make an empty channel for join_channel if reference condition is met.
-    // Nextflow checks processes to make sure all variables exist, even if the process
-    // won't be run without them, hence the need for this statement.
+    //======================================================
+    process demux {
+      // Take fastq(s) as input and demultiplex them using a perl script written
+      // by C. Alex Buerkle and Z. Gompert. This script can handle variable
+      // length barcodes from 8 to 10 bases long and allows for one base mismatch
+      // correction.
+      // We publish the output of this process to our output directory.
+      // This copies the output from the working directory that Nextflow builds
+      // the default is to make a symbolic link. However, if one wants to delete
+      // the working directory then copying these intermediate outputs is a
+      // way to retain them.
 
-      join_channel = Channel.empty()
-    }
-//======================================================
-process remove_uncommon {
-  // Dereplicate the combined, previously dereplicated files and keep
-  // those sequences that occur N or more times (user defined as --threshold).
+       publishDir "$params.path_out", pattern: "*", mode: 'copy'
 
-  // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+      input:
+        path fastq_file from filter_out
+        val machine_name from machine_name
 
-  input:
-    file fastq_file from join_channel
+      output:
+        path 'parsed_out.fastqcleaned' into demux_out
+        path 'parsereport*' into outputChannel
 
-  output:
-    path 'for_assembly.fasta' into remove_uncommon_out
-
-  when:
-    params.mode == 'denovo'
-
-  script:
-  """
-  cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fa
-  vsearch --fastx_filter out.fa --minsize ${params.threshold} --sizein --sizeout --fastaout for_assembly.fasta
-  rm ${outputdir}derep.txt
-  """
-}
-//======================================================
-process assemble {
-  // Use cd-hit to perform a de novo assembly. Functionality will be added
-  // for reference-based assembly at a later time.
-  // Work by LaCava et al. 2020 suggests that cd-hit is the best assembler
-  // for denovo work when variants are present.
-
-  // For troubleshooting ease
-   publishDir "$params.path_out", pattern: "*", mode: 'rellink'
-
-  input:
-    file fastq_file from remove_uncommon_out
-
-  output:
-    path 'denovo_assembly' into assemble_out
-
-  when:
-    params.mode == 'denovo'
-
-  shell:
-    '''
-    # M means memory limit, zero means unlimited
-    # T means threads, 0 means all available cpus should be used
-    # c means "sequence identity threshold, default 0.9
- 	  #   this is the default cd-hit's "global sequence identity" calculated as:
- 	  #   number of identical amino acids or bases in alignment
- 	  #   divided by the full length of the shorter sequence
-    # https://stackoverflow.com/questions/7815553/iterate-through-fasta-entries-and-rename-duplicates
-    cd-hit-est -i !{fastq_file} -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
-    awk '/^>/{gsub(/^>/,">Seq"i++"");}1' denovoAssembly_0.9  > denovo_assembly
-    '''
-  }
-
-//======================================================
-process build_denovo_index {
-  // Use bwa to make an index out of our denovo genome.
-  // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
-
-  // For troubleshooting ease
-  // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
-
-  input:
-    file genome from assemble_out
-
-  output:
-    path "*.{amb,ann,bwt,pac,sa}" into build_index_out
-
-  when:
-      params.mode == 'denovo'
-
-  script:
-  """
-  # -p is the prefix for the index
-  # -a bwtsw is left out because bwa should choose best index method
-  #    automatically based on the size of the reference genome
-
-  bwa index -p "index" $genome
-  """
-  }
-
-//======================================================
-  process build_reference_index {
-    // Use bwa to make an index out of our reference genome.
-    // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
-
-    // For troubleshooting ease
-    // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
-
-    input:
-      file genome from refgenome
-
-    output:
-      path "*.{amb,ann,bwt,pac,sa}" into build_index_out_reference
-
-    when:
-        params.mode == 'reference'
-
-    script:
-    """
-    # -p is the prefix for the index
-    # -a bwtsw is left out because bwa should choose best index method
-    #    automatically based on the size of the reference genome
-
-    bwa index -p "index" $genome
-    """
+      script:
+      """
+      parse_barcodes768.pl ${key} ${fastq_file} $machine_name
+      """
     }
 
-//======================================================
-  process align_samples_genome {
-    // Align samples to the newly indexed genome
-    // Note that the original script to implement this step was runbwa.pl
-    // I use Nextflow's file handling here instead of the perl wrapper.
-    // Also, I changed from bwa aln to bwa mem because the latter is supposed
-    // to have a higher mapping rate.
+// Collecting output of demux into a file, which forces the following processes to wait until demux is done
+// This hack was neccessary, otherwise the split function kept overwriting the files it produced.
+// and not all reads were parsed among files pertaining to samples.
 
-    // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+    demux_out
+      .collectFile(name: file("${outputdir}demuxTest.txt"))
+      .set {
+         demux_cat
+       }
 
-    input:
-      each fastq_file from split_out2.collect()
-      path indexFiles from build_index_out.mix(build_index_out_reference)
-      // The mix operator combines the two channels from the different build_index processes
-      // This does not seem to fail even if one channel is empty.
+     //======================================================
+     process split_files {
+       // Take demultiplexed fastq and split into files for each sample
+       // I shifted to a Python script that I found online and modified because
+       // Python is easier to read than Perl.
 
-    output:
-      path '*' into align_samples_out
+       // Copy the split files to the output directory. In the future this might
+       // be better implemented as an option, as it will eat up disk and increase
+       // runtime.
 
-    shell:
-    '''
-    # From manual: Align 70bp-1Mbp query sequences with the BWA-MEM algorithm.
-    # Briefly, the algorithm works by seeding alignments with maximal exact
-    # matches (MEMs) and then extending seeds with the
-    # affine-gap Smith-Waterman algorithm (SW).
+        publishDir "$params.path_out/split_fastqs/", pattern: "*", mode: 'copy'
 
-    outname=$(basename !{fastq_file})
-    bwa mem index !{fastq_file} > ${outname}aligned.sam
-    '''
- }
- //======================================================
-   process sam2bam {
-      // Convert Sequence Alignment and Map (SAM) files to BAM files, which are
-      // binary and thus smaller and easier to work with quickly.
-      // Originally we accomplished this with the sam2bam perl script.
-      // If you need a refresher on SAM/BAM then see this page:
-      // https://www.zymoresearch.com/blogs/blog/what-are-sam-and-bam-files
+       input:
+         each fastq_file from demux_cat
 
-      // publishDir "$params.path_out", pattern: "*", mode: 'copy'
+       output:
+         path '*fastq' into split_out
 
-   input:
-     path samfile from align_samples_out
+       script:
+       """
+       split_by_header_nofolder.py ${fastq_file}
+       rm ${outputdir}demuxTest.txt
+       """
+     }
 
-   output:
-     path '*sorted.bam' into sam2bam
+     // Duplicate this channel so we can use it multiple times.
+     split_out.into {split_out1; split_out2}
 
-     script:
-     """
-     # Use "view" to convert from sam to bam (-b) and output (-o)
-     # Use sort to sort by leftmost alignment coordinates
-     # Note that cat didn't seem to work here (either with shell or script invocation).
-     # Might be worth revisiting.
-     samtools view -b -o ${samfile}.bam ${samfile}
-     samtools sort ${samfile}.bam -o ${samfile}sorted.bam
-     """
-}
+     //======================================================
+     process dereplicate {
+       // Find all unique sequences in each sample.
 
-//======================================================
-  process makebai {
-     // Make index files for BAM files
-     // Use index to make an index for the BAM file. By convention, indices are
-     // suffixed with bai. The index explains which read is where in the file.
+       // For troubleshooting ease
+       // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
 
-     // mode: move is a terminating process
-     // publishDir "$params.path_out", pattern: "*", mode: 'move'
+       input:
+         each fastq_file from split_out1.collect()
 
-  input:
-    path bamfile from sam2bam
+       output:
+         path '*' into derep_out
 
-  output:
-      path("*") into bai_bam
+       when:
+           params.mode == 'denovo'
 
-    script:
-    """
-    samtools index $bamfile
-    """
-}
+       //Note that I use 'shell' instead of 'script' here so that it is a bit easier
+       // to mix bash and nextflow variables. Note that the nextflow variables
+       // are preceded by a ! and the code block must be inside three single quotes
+       // instead of three double quotes.
 
-// print STDOUT
-// Note that this happens during runtime and is not written anywhere.
-// In the future, I want to write stdout to a file and do some parsing of it.
-// ch1.view()
-// ch2.view()
+       shell:
+       '''
+       outname=$(basename !{fastq_file})
+       vsearch --fastx_uniques !{fastq_file} --sizein --sizeout --fastaout ${outname}derep
+       '''
+     }
+
+     //======================================================
+     //Join all the outputs of derep into a new file and turn that into a channel.
+     // Currently this outputs to the directory from which Nextflow is run, which I delete.
+     // Other solutions for this map-reduce problem seem clunkier
+
+     if(params.mode == 'denovo'){
+       derep_out
+         .collectFile(name: file("${outputdir}derep.txt"))
+         .set {
+           join_channel
+           }
+         } else {
+         // Make an empty channel for join_channel if reference condition is met.
+         // Nextflow checks processes to make sure all variables exist, even if the process
+         // won't be run without them, hence the need for this statement.
+
+           join_channel = Channel.empty()
+         }
+     //======================================================
+     process remove_uncommon {
+       // Dereplicate the combined, previously dereplicated files and keep
+       // those sequences that occur N or more times (user defined as --threshold).
+
+       // For troubleshooting ease
+       // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+       input:
+         file fastq_file from join_channel
+
+       output:
+         path 'for_assembly.fasta' into remove_uncommon_out
+
+       when:
+         params.mode == 'denovo'
+
+       script:
+       """
+       cat ${fastq_file} | vsearch --fastx_uniques - --sizein --sizeout --fastaout out.fa
+       vsearch --fastx_filter out.fa --minsize ${params.threshold} --sizein --sizeout --fastaout for_assembly.fasta
+       rm ${outputdir}derep.txt
+       """
+     }
+     //======================================================
+     process assemble {
+       // Use cd-hit to perform a de novo assembly. Functionality will be added
+       // for reference-based assembly at a later time.
+       // Work by LaCava et al. 2020 suggests that cd-hit is the best assembler
+       // for denovo work when variants are present.
+
+       // For troubleshooting ease
+        publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+       input:
+         file fastq_file from remove_uncommon_out
+
+       output:
+         path 'denovo_assembly' into assemble_out
+
+       when:
+         params.mode == 'denovo'
+
+       shell:
+         '''
+         # M means memory limit, zero means unlimited
+         # T means threads, 0 means all available cpus should be used
+         # c means "sequence identity threshold, default 0.9
+      	  #   this is the default cd-hit's "global sequence identity" calculated as:
+      	  #   number of identical amino acids or bases in alignment
+      	  #   divided by the full length of the shorter sequence
+         # https://stackoverflow.com/questions/7815553/iterate-through-fasta-entries-and-rename-duplicates
+         cd-hit-est -i !{fastq_file} -o denovoAssembly_0.9 -M 0 -T 0 -c 0.9
+         awk '/^>/{gsub(/^>/,">Seq"i++"");}1' denovoAssembly_0.9  > denovo_assembly
+         '''
+       }
+
+     //======================================================
+     process build_denovo_index {
+       // Use bwa to make an index out of our denovo genome.
+       // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
+
+       // For troubleshooting ease
+       // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+       input:
+         file genome from assemble_out
+
+       output:
+         path "*.{amb,ann,bwt,pac,sa}" into build_index_out
+
+       when:
+           params.mode == 'denovo'
+
+       script:
+       """
+       # -p is the prefix for the index
+       # -a bwtsw is left out because bwa should choose best index method
+       #    automatically based on the size of the reference genome
+
+       bwa index -p "index" $genome
+       """
+       }
+
+     //======================================================
+       process build_reference_index {
+         // Use bwa to make an index out of our reference genome.
+         // For bwa help see: http://bio-bwa.sourceforge.net/bwa.shtml
+
+         // For troubleshooting ease
+         // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+         input:
+           file genome from refgenome
+
+         output:
+           path "*.{amb,ann,bwt,pac,sa}" into build_index_out_reference
+
+         when:
+             params.mode == 'reference'
+
+         script:
+         """
+         # -p is the prefix for the index
+         # -a bwtsw is left out because bwa should choose best index method
+         #    automatically based on the size of the reference genome
+
+         bwa index -p "index" $genome
+         """
+         }
+
+     //======================================================
+       process align_samples_genome {
+         // Align samples to the newly indexed genome
+         // Note that the original script to implement this step was runbwa.pl
+         // I use Nextflow's file handling here instead of the perl wrapper.
+         // Also, I changed from bwa aln to bwa mem because the latter is supposed
+         // to have a higher mapping rate.
+
+         // publishDir "$params.path_out", pattern: "*", mode: 'rellink'
+
+         input:
+           each fastq_file from split_out2.collect()
+           path indexFiles from build_index_out.mix(build_index_out_reference)
+           // The mix operator combines the two channels from the different build_index processes
+           // This does not seem to fail even if one channel is empty.
+
+         output:
+           path '*' into align_samples_out
+
+         shell:
+         '''
+         # From manual: Align 70bp-1Mbp query sequences with the BWA-MEM algorithm.
+         # Briefly, the algorithm works by seeding alignments with maximal exact
+         # matches (MEMs) and then extending seeds with the
+         # affine-gap Smith-Waterman algorithm (SW).
+
+         outname=$(basename !{fastq_file})
+         bwa mem index !{fastq_file} > ${outname}aligned.sam
+         '''
+      }
+      //======================================================
+        process sam2bam {
+           // Convert Sequence Alignment and Map (SAM) files to BAM files, which are
+           // binary and thus smaller and easier to work with quickly.
+           // Originally we accomplished this with the sam2bam perl script.
+           // If you need a refresher on SAM/BAM then see this page:
+           // https://www.zymoresearch.com/blogs/blog/what-are-sam-and-bam-files
+
+           // publishDir "$params.path_out", pattern: "*", mode: 'copy'
+
+        input:
+          path samfile from align_samples_out
+
+        output:
+          path '*sorted.bam' into sam2bam
+
+          script:
+          """
+          # Use "view" to convert from sam to bam (-b) and output (-o)
+          # Use sort to sort by leftmost alignment coordinates
+          # Note that cat didn't seem to work here (either with shell or script invocation).
+          # Might be worth revisiting.
+          samtools view -b -o ${samfile}.bam ${samfile}
+          samtools sort ${samfile}.bam -o ${samfile}sorted.bam
+          """
+     }
+
+     //======================================================
+       process makebai {
+          // Make index files for BAM files
+          // Use index to make an index for the BAM file. By convention, indices are
+          // suffixed with bai. The index explains which read is where in the file.
+
+          // mode: move is a terminating process
+          // publishDir "$params.path_out", pattern: "*", mode: 'move'
+
+       input:
+         path bamfile from sam2bam
+
+       output:
+           path("*") into bai_bam
+
+         script:
+         """
+         samtools index $bamfile
+         """
+     }
+
+     // print STDOUT
+     // Note that this happens during runtime and is not written anywhere.
+     // In the future, I want to write stdout to a file and do some parsing of it.
+     // ch1.view()
+     // ch2.view()
