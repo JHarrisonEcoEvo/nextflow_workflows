@@ -65,6 +65,7 @@ if(params.mode == 'reference'){
 key = file(params.key) //specify that the demux key is a file
 params.threshold = 4
 params.force = false //Note that I am not using quotes, so this stays a Boolean!
+params.cutoff = 2
 
 log.info """\
          G B S - N F   P I P E L I N E
@@ -77,6 +78,7 @@ log.info """\
          Mode (should be either denovo or reference): ${params.mode}
          Threshold (sequence depth to be included in assembly): ${params.threshold}
          Force (used to force a run in the face of bad demultiplexing): $params.force
+         Cutoff: demultiplexing QC ratio (counts of good vs. bad MIDs), was set to $params.cutoff
          NOTE: Groovy will coerce any string to true for this parameter, except for false!
          """
          .stripIndent()
@@ -139,11 +141,11 @@ process extractMachineName {
         ratio=`echo $goodMidCount $badMidCount | awk '{ print \$1/\$2 }'`
 
         #Conditionally print a statement to STDOUT
-        if [[ $ratio > 1.2 ]]
+        if [[ $ratio > !{params.cutoff} ]]
         then
           echo "The ratio of good to bad mids was ${ratio}. We good....hopefully"
           failDirective="dontfail"
-        elif [[ $ratio < 1.2 ]]
+        elif [[ $ratio < !{params.cutoff} ]]
         then
           echo "YIKES: The ratio of good to bad mids was ${ratio}, this seems bad. Stopping now, unless the --force = TRUE parameter has been invoked"
           failDirective="fail"
