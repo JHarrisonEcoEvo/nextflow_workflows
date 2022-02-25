@@ -7,14 +7,14 @@
 //  of this workflow is an OTU table, a fasta file with consensus OTU sequences
 //
 //  Usage: nextflow pe_to_otu --in --key --path_out
-//  Example: nextflow pe_to_otu --in data/sample1.fastq --key data/samplekey.csv
+//  Example: nextflow pe_to_otu --in sample*_R{1,2}.fastq --key samplekey.csv
 //   --path_out ./data/
 //
 //
 //  "in" - should be a glob pattern to unzipped paired-end fastq reads (e.g., "*_{1,2}.fastq")
-//  "key" -- The demultiplexing key, which should have N columns:
-fix key docs
-//  well, sequence, sample. See example data to view expected formatting.
+//  "key" -- The demultiplexing key, which should have the following columns
+// (in the correct order!): forwardmid, reversemid, locus, samplename, project,
+//  wellposition, plate, midplate, substrate, client_name
 //  "path_out" - The output path, which can be wherever you want the files output by
 //  this workflow to be written.
 //
@@ -32,15 +32,13 @@ fix key docs
 //                            Input and log.info
 //=============================================================================
 
-Input fastq files: ${params.in}
 outputdir = file(params.path_out) //specify the output directory
-key = file(params.key) //specify that the demux key is a file
 
 log.info """\
          PE 2 OTU - N F   P I P E L I N E
          ===================================
-         Input fastq file: ${params.in}
-         Demultiplexing key: $key
+         Input fastq file glob: ${params.in}
+         Demultiplexing key: $params.key
          Output directory: $outputdir
          """
          .stripIndent()
@@ -52,11 +50,14 @@ log.info """\
 // elements in the emitted tuples". This keeps any oddness from happening during
 // parallel processing.
 
-fastq_rawF = Channel.fromFilePairs(${params.in}, flat:true)
-      .splitFastq(by: 100_000, pe:true, file:true)
-      //.view()
+// NEEDS TO HAVE A HIGHER 'BY' SPLIT INTEGER. THIS IS SET FOR TESTING.
+fastq_raw = Channel.fromFilePairs('data/*{1,2}_test.fastq', flat:true)
+      .splitFastq(by: 100, pe:true, file:true)
 
-fastq_Fpath_forMachineNameOnly = Channel.fromPath(${params.in})
+fastq_Fpath_forMachineNameOnly = Channel.fromPath(params.in)
+
+key_path = Channel.fromPath(params.key) //specify that the demux key is a file
+
 
 //=============================================================================
 //                            Begin processes
@@ -76,28 +77,6 @@ process extractMachineName {
       head -n 1 $fastq_file | cut -d: -f1 | sed 's/@//'
       """
   }
-//=============================================================================
-process filter {
-  // Remove reads that have more than one expected error
-  // Note that capturing stdout from numerous iterations is not helpful
-  // without subsequent combination and summarization of those files.
-  // That task will be left for later, during optimization.
-
-  input:
-    path fastq_file from fastq_raw
-
-  output:
-      path '*' into filter_out
-     //  stdout ch2                           //capture STDOUT
-
-  script:
-      """
-      vsearch --fastq_filter ${fastq_file} --fastq_maxee 1 --fastqout ${fastq_file}cleaned
-
-      # echo "Number of reads after filtering in ${fastq_file}cleaned"
-      # grep -c "^@" ${fastq_file}cleaned
-      """
-  }
 
 //======================================================
   process demux {
@@ -109,18 +88,20 @@ process filter {
     // The parse reports for all iterations of this process should be combined
     // and summarized in the future.
 
-    // publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
+     publishDir "$params.path_out", pattern: "parsereport*", mode: 'copy'
 
     input:
-      path fastq_file from filter_out
+      set sampleID, file(read1), file(read2)  from fastq_raw
+      path key from key_path
       val machine_name from machine_name
 
     output:
-      path 'parsed_out.fastqcleaned' into demux_out
+      path 'parsed_*' into demux_out
+      path 'parsereport*' into demux_out_diagnostics
 
     script:
     """
-    parse_count.pl mid_key.csv forward.fq reverse.fq machinename
+    parse_count.pl $key $read1 $read2 $machine_name
     """
   }
 
